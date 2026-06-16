@@ -4,12 +4,15 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"aws-asset-view/internal/inventory"
+	"aws-asset-view/internal/store"
+	"aws-asset-view/internal/web"
 )
 
 func main() {
@@ -28,6 +31,9 @@ func main() {
 		ssoAccounts     string
 		includeSSOPerms bool
 		ssoAdminProfile string
+		serve           bool
+		addr            string
+		dbPath          string
 		timeout         time.Duration
 	)
 
@@ -45,6 +51,9 @@ func main() {
 	flag.StringVar(&ssoAccounts, "sso-account-ids", "", "Optional comma-separated account IDs to include when --sso-all-accounts is set")
 	flag.BoolVar(&includeSSOPerms, "include-sso-permissions", true, "Include an XLSX sso_permissions sheet using SSO Admin / Identity Store APIs when output is .xlsx")
 	flag.StringVar(&ssoAdminProfile, "sso-admin-profile", "", "AWS profile with sso-admin/identitystore permissions; defaults to --profile or first --profiles entry")
+	flag.BoolVar(&serve, "serve", false, "Run web UI for table lookup and XLSX downloads")
+	flag.StringVar(&addr, "addr", "127.0.0.1:8080", "Web server listen address when --serve is set")
+	flag.StringVar(&dbPath, "db", "asset-view.db", "SQLite database path for web mode")
 	flag.DurationVar(&timeout, "timeout", 10*time.Minute, "Collection timeout")
 	flag.Parse()
 
@@ -63,8 +72,35 @@ func main() {
 		SSOStartURL:           ssoStartURL,
 		SSORoleName:           ssoRoleName,
 		SSOAccountIDs:         splitCSV(ssoAccounts),
-		IncludeSSOPermissions: includeSSOPerms && strings.HasSuffix(strings.ToLower(output), ".xlsx"),
+		IncludeSSOPermissions: includeSSOPerms && (serve || strings.HasSuffix(strings.ToLower(output), ".xlsx")),
 		SSOAdminProfile:       ssoAdminProfile,
+	}
+
+	if serve {
+		st, err := store.Open(dbPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "open db: %v\n", err)
+			os.Exit(1)
+		}
+		defer st.Close()
+		if shouldCollectOnStart(opts) {
+			report, err := inventory.CollectReport(ctx, opts)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "initial collection completed with errors: %v\n", err)
+			}
+			if len(report.Assets)+len(report.SecurityRules)+len(report.SSOPermissions) > 0 {
+				if _, saveErr := st.SaveReport(ctx, report, "serve-start"); saveErr != nil {
+					fmt.Fprintf(os.Stderr, "save initial snapshot: %v\n", saveErr)
+					os.Exit(1)
+				}
+			}
+		}
+		fmt.Fprintf(os.Stderr, "serving aws-asset-view at http://%s (db: %s)\n", addr, dbPath)
+		if err := http.ListenAndServe(addr, web.New(st, opts).Handler()); err != nil {
+			fmt.Fprintf(os.Stderr, "serve: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	report, err := inventory.CollectReport(ctx, opts)
@@ -115,6 +151,10 @@ func main() {
 	if err != nil {
 		os.Exit(2)
 	}
+}
+
+func shouldCollectOnStart(opts inventory.Options) bool {
+	return opts.Profile != "" || len(opts.Profiles) > 0 || opts.SSOAllAccounts
 }
 
 func splitCSV(v string) []string {
