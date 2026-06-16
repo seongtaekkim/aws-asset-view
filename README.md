@@ -45,6 +45,17 @@ go build -o aws-asset-view ./cmd/aws-asset-view
 ./aws-asset-view --profile prod --regions ap-northeast-2 --output prod-assets.csv
 ```
 
+계정마다 SSO role / permission set이 달라서 AWS CLI profile을 여러 개 만들어 둔 경우:
+
+```bash
+./aws-asset-view \
+  --profiles dev,staging,prod,security \
+  --regions ap-northeast-2 \
+  --output assets.csv
+```
+
+이 모드는 각 profile의 `sso_account_id`, `sso_role_name`, `sso_session` 설정을 그대로 사용합니다. 즉 계정별 role 이름이 달라도 `~/.aws/config`에 profile만 정확히 잡혀 있으면 됩니다.
+
 일부 서비스만 수집:
 
 ```bash
@@ -117,7 +128,8 @@ aws sso login --profile your-sso-profile
 |---|---|
 | collected_at | 수집 시각 UTC |
 | account_id | AWS Account ID |
-| account_name | AWS SSO 계정 이름. 단일 계정 수집에서는 비어 있을 수 있음 |
+| account_name | AWS SSO 계정 이름. profile 순회 모드에서는 profile 이름 |
+| profile | 수집에 사용한 AWS CLI profile |
 | region | 리전. Route53 등 글로벌 리소스는 `global` |
 | service | ec2, eks, rds, s3, lb, route53, vpc, waf, lambda 등 |
 | resource_type | instance, cluster, nodegroup, db_instance, bucket 등 |

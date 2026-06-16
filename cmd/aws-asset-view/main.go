@@ -15,6 +15,7 @@ import (
 func main() {
 	var (
 		profile        string
+		profilesFlag   string
 		regionsFlag    string
 		servicesFlag   string
 		output         string
@@ -29,6 +30,7 @@ func main() {
 	)
 
 	flag.StringVar(&profile, "profile", "", "AWS shared config profile name")
+	flag.StringVar(&profilesFlag, "profiles", "", "Comma-separated AWS shared config profiles to scan; useful when each account has a different SSO role")
 	flag.StringVar(&regionsFlag, "regions", "ap-northeast-2", "Comma-separated AWS regions to scan")
 	flag.StringVar(&servicesFlag, "services", "all", "Comma-separated services: all,ec2,eks,rds,s3,lb,route53,vpc,subnet,routetable,sg,vpn,waf,lambda")
 	flag.StringVar(&output, "output", "assets.csv", "CSV output path, or '-' for stdout")
@@ -47,6 +49,7 @@ func main() {
 
 	opts := inventory.Options{
 		Profile:        profile,
+		Profiles:       splitCSV(profilesFlag),
 		Regions:        splitCSV(regionsFlag),
 		Services:       serviceSet(servicesFlag),
 		IncludeGlobal:  includeGlobal,
@@ -64,8 +67,8 @@ func main() {
 	}
 
 	sort.Slice(records, func(i, j int) bool {
-		li := records[i].AccountID + records[i].AccountName + records[i].Region + records[i].Service + records[i].ResourceType + records[i].ResourceID
-		lj := records[j].AccountID + records[j].AccountName + records[j].Region + records[j].Service + records[j].ResourceType + records[j].ResourceID
+		li := records[i].AccountID + records[i].AccountName + records[i].SourceProfile + records[i].Region + records[i].Service + records[i].ResourceType + records[i].ResourceID
+		lj := records[j].AccountID + records[j].AccountName + records[j].SourceProfile + records[j].Region + records[j].Service + records[j].ResourceType + records[j].ResourceID
 		return li < lj
 	})
 

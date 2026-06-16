@@ -33,6 +33,7 @@ import (
 
 type Options struct {
 	Profile       string
+	Profiles      []string
 	Regions       []string
 	Services      map[string]bool
 	IncludeGlobal bool
@@ -61,6 +62,9 @@ type InstanceSpec struct {
 
 func Collect(ctx context.Context, opts Options) ([]AssetRecord, error) {
 	opts = normalizeOptions(opts)
+	if len(opts.Profiles) > 0 {
+		return collectProfiles(ctx, opts)
+	}
 	if opts.SSOAllAccounts {
 		return collectSSOAccounts(ctx, opts)
 	}
@@ -124,6 +128,39 @@ func collectWithBaseConfig(ctx context.Context, opts Options, baseCfg aws.Config
 
 	for i := range records {
 		records[i].AccountName = accountName
+		records[i].SourceProfile = opts.Profile
+	}
+	return records, errors.Join(errs...)
+}
+
+func collectProfiles(ctx context.Context, opts Options) ([]AssetRecord, error) {
+	var records []AssetRecord
+	var errs []error
+	for _, profile := range opts.Profiles {
+		profile = strings.TrimSpace(profile)
+		if profile == "" {
+			continue
+		}
+		profileOpts := opts
+		profileOpts.Profile = profile
+		profileOpts.Profiles = nil
+		profileOpts.SSOAllAccounts = false
+
+		baseCfg, err := loadConfig(ctx, profile, opts.Regions[0])
+		if err != nil {
+			errs = append(errs, fmt.Errorf("load profile %s: %w", profile, err))
+			continue
+		}
+		identity, err := sts.NewFromConfig(baseCfg).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+		if err != nil {
+			errs = append(errs, fmt.Errorf("get caller identity profile %s: %w", profile, err))
+			continue
+		}
+		profileRecords, profileErr := collectWithBaseConfig(ctx, profileOpts, baseCfg, aws.ToString(identity.Account), profile)
+		records = append(records, profileRecords...)
+		if profileErr != nil {
+			errs = append(errs, fmt.Errorf("collect profile %s: %w", profile, profileErr))
+		}
 	}
 	return records, errors.Join(errs...)
 }

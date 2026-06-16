@@ -13,6 +13,7 @@ type AssetRecord struct {
 	CollectedAt      string
 	AccountID        string
 	AccountName      string
+	SourceProfile    string
 	Region           string
 	Service          string
 	ResourceType     string
@@ -49,6 +50,7 @@ func csvHeader() []string {
 		"collected_at",
 		"account_id",
 		"account_name",
+		"profile",
 		"region",
 		"service",
 		"resource_type",
@@ -75,6 +77,7 @@ func (r AssetRecord) csvRow() []string {
 		r.CollectedAt,
 		r.AccountID,
 		r.AccountName,
+		r.SourceProfile,
 		r.Region,
 		r.Service,
 		r.ResourceType,
