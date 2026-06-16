@@ -39,11 +39,13 @@ type Options struct {
 	IncludeGlobal bool
 	RDSPricing    bool
 
-	SSOAllAccounts bool
-	SSORegion      string
-	SSOStartURL    string
-	SSORoleName    string
-	SSOAccountIDs  []string
+	SSOAllAccounts        bool
+	SSORegion             string
+	SSOStartURL           string
+	SSORoleName           string
+	SSOAccountIDs         []string
+	IncludeSSOPermissions bool
+	SSOAdminProfile       string
 }
 
 type Collector struct {
@@ -181,7 +183,7 @@ func (c *Collector) collectRegion(ctx context.Context, cfg aws.Config, region st
 	var records []AssetRecord
 	var errs []error
 
-	if c.enabled("ec2") || c.enabled("vpc") || c.enabled("subnet") || c.enabled("routetable") || c.enabled("sg") || c.enabled("vpn") {
+	if c.enabled("ec2") || c.enabled("vpc") || c.enabled("subnet") || c.enabled("routetable") || c.enabled("sg") || c.enabled("vpn") || c.enabled("flowlog") {
 		rs, es := c.collectEC2AndNetwork(ctx, cfg, region)
 		records = append(records, rs...)
 		errs = append(errs, es...)
@@ -208,6 +210,21 @@ func (c *Collector) collectRegion(ctx context.Context, cfg aws.Config, region st
 	}
 	if c.enabled("lambda") {
 		rs, es := c.collectLambda(ctx, cfg, region)
+		records = append(records, rs...)
+		errs = append(errs, es...)
+	}
+	if c.enabled("cloudwatch") || c.enabled("logs") {
+		rs, es := c.collectCloudWatch(ctx, cfg, region)
+		records = append(records, rs...)
+		errs = append(errs, es...)
+	}
+	if c.enabled("efs") {
+		rs, es := c.collectEFS(ctx, cfg, region)
+		records = append(records, rs...)
+		errs = append(errs, es...)
+	}
+	if c.enabled("backup") {
+		rs, es := c.collectBackup(ctx, cfg, region)
 		records = append(records, rs...)
 		errs = append(errs, es...)
 	}
@@ -391,6 +408,27 @@ func (c *Collector) collectEC2AndNetwork(ctx context.Context, cfg aws.Config, re
 		}
 	}
 
+	if c.enabled("flowlog") || c.enabled("vpc") {
+		p := ec2.NewDescribeFlowLogsPaginator(client, &ec2.DescribeFlowLogsInput{})
+		for p.HasMorePages() {
+			page, err := p.NextPage(ctx)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("ec2 describe flow logs %s: %w", region, err))
+				break
+			}
+			for _, fl := range page.FlowLogs {
+				id := aws.ToString(fl.FlowLogId)
+				rec := NewRecord(c.accountID, region, "vpc", "flow_log", id)
+				rec.Name = id
+				rec.ARN = arn(region, c.accountID, "ec2", "vpc-flow-log/"+id)
+				rec.State = aws.ToString(fl.FlowLogStatus)
+				rec.DetailsJSON = JSONMap(map[string]any{"resource_id": aws.ToString(fl.ResourceId), "traffic_type": string(fl.TrafficType), "log_destination_type": string(fl.LogDestinationType), "log_destination": aws.ToString(fl.LogDestination), "log_group_name": aws.ToString(fl.LogGroupName), "deliver_logs_status": aws.ToString(fl.DeliverLogsStatus), "creation_time": fl.CreationTime})
+				rec.TagsJSON = "{}"
+				records = append(records, rec)
+			}
+		}
+	}
+
 	return records, errs
 }
 
@@ -418,6 +456,8 @@ func (c *Collector) collectEKS(ctx context.Context, cfg aws.Config, region strin
 				rec.Name = aws.ToString(cl.Name)
 				rec.ARN = aws.ToString(cl.Arn)
 				rec.State = string(cl.Status)
+				rec.ProductName = "Amazon EKS"
+				rec.Version = aws.ToString(cl.Version)
 				vpc := eksClusterVPC(cl.ResourcesVpcConfig)
 				rec.VPCID = vpc.vpcID
 				rec.SubnetIDs = Join(vpc.subnetIDs)
@@ -485,17 +525,45 @@ func (c *Collector) collectRDS(ctx context.Context, cfg aws.Config, region strin
 			rec.Name = id
 			rec.ARN = aws.ToString(db.DBInstanceArn)
 			rec.State = aws.ToString(db.DBInstanceStatus)
+			rec.ProductName = aws.ToString(db.Engine)
+			rec.Version = aws.ToString(db.EngineVersion)
 			rec.SKU = aws.ToString(db.DBInstanceClass)
 			rec.VPCID = rdsVPCID(db.DBSubnetGroup)
 			rec.SecurityGroupIDs = rdsVPCSGIDs(db.VpcSecurityGroups)
 			rec.PublicAccess = boolString(aws.ToBool(db.PubliclyAccessible))
 			rec.Encrypted = boolString(aws.ToBool(db.StorageEncrypted))
+			rec.BackupRetention = strconv.Itoa(int(aws.ToInt32(db.BackupRetentionPeriod)))
 			if spec, err := c.rdsSpec(ctx, region, rec.SKU); err == nil {
 				rec.VCPU = spec.VCPU
 				rec.MemoryMiB = spec.MemoryMiB
 			}
 			rec.TagsJSON = "{}"
 			rec.DetailsJSON = JSONMap(map[string]any{"engine": aws.ToString(db.Engine), "engine_version": aws.ToString(db.EngineVersion), "endpoint": rdsEndpoint(db.Endpoint), "storage_type": aws.ToString(db.StorageType), "allocated_storage_gib": db.AllocatedStorage, "multi_az": aws.ToBool(db.MultiAZ), "backup_retention_days": db.BackupRetentionPeriod, "deletion_protection": aws.ToBool(db.DeletionProtection)})
+			records = append(records, rec)
+		}
+	}
+
+	cp := rds.NewDescribeDBClustersPaginator(client, &rds.DescribeDBClustersInput{})
+	for cp.HasMorePages() {
+		page, err := cp.NextPage(ctx)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("rds describe db clusters %s: %w", region, err))
+			break
+		}
+		for _, cluster := range page.DBClusters {
+			id := aws.ToString(cluster.DBClusterIdentifier)
+			rec := NewRecord(c.accountID, region, "rds", "db_cluster", id)
+			rec.Name = id
+			rec.ARN = aws.ToString(cluster.DBClusterArn)
+			rec.State = aws.ToString(cluster.Status)
+			rec.ProductName = aws.ToString(cluster.Engine)
+			rec.Version = aws.ToString(cluster.EngineVersion)
+			rec.VPCID = aws.ToString(cluster.DBSubnetGroup)
+			rec.SecurityGroupIDs = rdsClusterSGIDs(cluster.VpcSecurityGroups)
+			rec.Encrypted = boolString(aws.ToBool(cluster.StorageEncrypted))
+			rec.BackupRetention = strconv.Itoa(int(aws.ToInt32(cluster.BackupRetentionPeriod)))
+			rec.DetailsJSON = JSONMap(map[string]any{"endpoint": aws.ToString(cluster.Endpoint), "reader_endpoint": aws.ToString(cluster.ReaderEndpoint), "multi_az": aws.ToBool(cluster.MultiAZ), "database_name": aws.ToString(cluster.DatabaseName), "deletion_protection": aws.ToBool(cluster.DeletionProtection), "members": cluster.DBClusterMembers})
+			rec.TagsJSON = "{}"
 			records = append(records, rec)
 		}
 	}
@@ -518,7 +586,10 @@ func (c *Collector) collectS3(ctx context.Context, cfg aws.Config) ([]AssetRecor
 		rec.ARN = "arn:aws:s3:::" + name
 		rec.PublicAccess = c.s3PublicAccess(ctx, client, name)
 		rec.Encrypted = c.s3Encrypted(ctx, client, name)
-		rec.DetailsJSON = JSONMap(map[string]any{"creation_date": b.CreationDate, "versioning": c.s3Versioning(ctx, client, name)})
+		lock := c.s3ObjectLock(ctx, client, name)
+		rec.WORMEnabled = lock.enabled
+		rec.Retention = lock.retention
+		rec.DetailsJSON = JSONMap(map[string]any{"creation_date": b.CreationDate, "versioning": c.s3Versioning(ctx, client, name), "object_lock_mode": lock.mode, "lifecycle": c.s3Lifecycle(ctx, client, name)})
 		rec.TagsJSON = "{}"
 		records = append(records, rec)
 	}
@@ -919,6 +990,14 @@ func rdsEndpoint(ep *rdstypes.Endpoint) map[string]any {
 	return map[string]any{"address": aws.ToString(ep.Address), "port": ep.Port, "hosted_zone_id": aws.ToString(ep.HostedZoneId)}
 }
 
+func rdsClusterSGIDs(groups []rdstypes.VpcSecurityGroupMembership) string {
+	ids := make([]string, 0, len(groups))
+	for _, g := range groups {
+		ids = append(ids, aws.ToString(g.VpcSecurityGroupId))
+	}
+	return Join(ids)
+}
+
 type lambdaVPCInfo struct {
 	vpcID            string
 	subnetIDs        []string
@@ -1018,4 +1097,36 @@ func (c *Collector) s3PublicAccess(ctx context.Context, client *s3.Client, bucke
 	cfg := out.PublicAccessBlockConfiguration
 	blocked := aws.ToBool(cfg.BlockPublicAcls) && aws.ToBool(cfg.BlockPublicPolicy) && aws.ToBool(cfg.IgnorePublicAcls) && aws.ToBool(cfg.RestrictPublicBuckets)
 	return boolString(!blocked)
+}
+
+type s3ObjectLockInfo struct {
+	enabled   string
+	mode      string
+	retention string
+}
+
+func (c *Collector) s3ObjectLock(ctx context.Context, client *s3.Client, bucket string) s3ObjectLockInfo {
+	out, err := client.GetObjectLockConfiguration(ctx, &s3.GetObjectLockConfigurationInput{Bucket: aws.String(bucket)})
+	if err != nil || out.ObjectLockConfiguration == nil {
+		return s3ObjectLockInfo{enabled: "false"}
+	}
+	info := s3ObjectLockInfo{enabled: boolString(out.ObjectLockConfiguration.ObjectLockEnabled == s3types.ObjectLockEnabledEnabled)}
+	if out.ObjectLockConfiguration.Rule != nil && out.ObjectLockConfiguration.Rule.DefaultRetention != nil {
+		ret := out.ObjectLockConfiguration.Rule.DefaultRetention
+		info.mode = string(ret.Mode)
+		if ret.Days != nil {
+			info.retention = fmt.Sprintf("%d days", aws.ToInt32(ret.Days))
+		} else if ret.Years != nil {
+			info.retention = fmt.Sprintf("%d years", aws.ToInt32(ret.Years))
+		}
+	}
+	return info
+}
+
+func (c *Collector) s3Lifecycle(ctx context.Context, client *s3.Client, bucket string) any {
+	out, err := client.GetBucketLifecycleConfiguration(ctx, &s3.GetBucketLifecycleConfigurationInput{Bucket: aws.String(bucket)})
+	if err != nil {
+		return "unknown"
+	}
+	return out.Rules
 }

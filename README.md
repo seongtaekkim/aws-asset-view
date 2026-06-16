@@ -39,6 +39,18 @@ go build -o aws-asset-view ./cmd/aws-asset-view
 ./aws-asset-view --regions ap-northeast-2 --output assets.csv
 ```
 
+여러 탭이 있는 Excel 대장으로 출력하려면 `.xlsx` 확장자를 사용합니다.
+
+```bash
+./aws-asset-view --regions ap-northeast-2 --output assets.xlsx
+```
+
+XLSX 출력 시 시트는 다음처럼 생성됩니다.
+
+1. `assets`: 전체 자산 대장
+2. `security_group_rules`: 보안그룹 inbound/outbound 룰 상세
+3. `sso_permissions`: SSO 사용자/그룹별 Permission Set 할당 현황
+
 특정 프로파일 사용:
 
 ```bash
@@ -51,7 +63,7 @@ go build -o aws-asset-view ./cmd/aws-asset-view
 ./aws-asset-view \
   --profiles dev,staging,prod,security \
   --regions ap-northeast-2 \
-  --output assets.csv
+  --output assets.xlsx
 ```
 
 이 모드는 각 profile의 `sso_account_id`, `sso_role_name`, `sso_session` 설정을 그대로 사용합니다. 즉 계정별 role 이름이 달라도 `~/.aws/config`에 profile만 정확히 잡혀 있으면 됩니다.
@@ -62,8 +74,8 @@ go build -o aws-asset-view ./cmd/aws-asset-view
 ./aws-asset-view \
   --profile prod \
   --regions ap-northeast-2 \
-  --services ec2,eks,rds,s3,lb,vpc,subnet,routetable,sg,vpn,waf,lambda,route53 \
-  --output assets.csv
+  --services ec2,eks,rds,s3,efs,backup,cloudwatch,lb,vpc,subnet,routetable,sg,vpn,flowlog,waf,lambda,route53 \
+  --output assets.xlsx
 ```
 
 표준출력으로 출력:
@@ -88,7 +100,7 @@ RDS vCPU/Memory까지 AWS Pricing API로 채우기:
 aws sso login --profile your-sso-profile
 ```
 
-그 다음 SSO에서 접근 가능한 모든 계정을 순회해 CSV를 생성합니다.
+그 다음 SSO에서 접근 가능한 모든 계정을 순회해 CSV 또는 XLSX를 생성합니다.
 
 ```bash
 ./aws-asset-view \
@@ -97,7 +109,7 @@ aws sso login --profile your-sso-profile
   --sso-region ap-northeast-2 \
   --sso-role-name ReadOnlyAccess \
   --regions ap-northeast-2 \
-  --output all-accounts-assets.csv
+  --output all-accounts-assets.xlsx
 ```
 
 특정 계정만 포함하려면:
@@ -118,11 +130,11 @@ aws sso login --profile your-sso-profile
 2. `sso:ListAccounts`로 접근 가능한 계정 목록을 가져옵니다.
 3. 계정별로 `sso:ListAccountRoles` / `sso:GetRoleCredentials`를 호출합니다.
 4. 받은 임시 자격증명으로 각 계정의 AWS API를 직접 조회합니다.
-5. 결과를 하나의 CSV에 합칩니다.
+5. 결과를 하나의 CSV 또는 XLSX에 합칩니다.
 
 `--sso-role-name`을 생략하면 계정별 사용 가능한 role 이름 중 정렬상 첫 번째 role을 사용합니다. 운영에서는 Permission Set 이름이 계정마다 동일하도록 맞추고 `--sso-role-name`을 지정하는 것을 권장합니다.
 
-## CSV 컬럼
+## 자산 시트 / CSV 컬럼
 
 | 컬럼 | 설명 |
 |---|---|
@@ -137,6 +149,8 @@ aws sso login --profile your-sso-profile
 | name | Name 태그 또는 리소스 이름 |
 | arn | ARN |
 | state | 리소스 상태 |
+| product_name | 제품명/엔진명. 예: Amazon EKS, mysql, aurora-postgresql |
+| version | DB engine version, EKS version, backup plan version 등 |
 | sku | EC2 instance type, RDS class, Lambda runtime, LB type 등 |
 | vcpu | 조회 가능한 컴퓨팅 자원의 vCPU |
 | memory_mib | 조회 가능한 컴퓨팅 자원의 메모리 MiB |
@@ -146,6 +160,9 @@ aws sso login --profile your-sso-profile
 | security_group_ids | 세미콜론 구분 SG 목록 |
 | public_access | 인터넷 노출 또는 public 설정 추정 |
 | encrypted | 암호화 여부 |
+| worm_enabled | S3 Object Lock 또는 AWS Backup Vault Lock 등 WORM성 설정 여부 |
+| retention | Object Lock / Backup Vault / CloudWatch Logs 보관 기간 |
+| backup_retention | RDS backup retention, EFS backup policy 등 백업 보관/활성 정보 |
 | details_json | 서비스별 상세 정보 JSON |
 | tags_json | 태그 JSON |
 
@@ -158,14 +175,54 @@ aws sso login --profile your-sso-profile
 - Route Table
 - Security Group
 - Site-to-Site VPN
+- VPC Flow Logs
 - EKS Cluster
 - EKS Managed Node Group
 - RDS DB Instance
-- S3 Bucket
+- RDS DB Cluster
+- S3 Bucket / Object Lock(WORM) / Lifecycle
+- EFS File System / Lifecycle / Backup Policy
+- AWS Backup Vault / Plan / Protected Resource
+- CloudWatch Alarm / Log Group
 - ALB/NLB/ELBv2 Load Balancer
 - Route53 Hosted Zone / Record
 - WAFv2 Web ACL, Regional/CloudFront scope
 - Lambda Function
+
+## Security Group Rules 시트
+
+XLSX 출력에서는 `security_group_rules` 시트가 추가됩니다. 보안그룹 룰을 다음 컬럼으로 펼쳐서 보여줍니다.
+
+| 컬럼 | 설명 |
+|---|---|
+| security_group_id | 보안그룹 ID |
+| security_group_name | 보안그룹명 |
+| direction | inbound / outbound |
+| priority | AWS Security Group은 우선순위 개념이 없어 비워둠 |
+| rule_name | 룰 description을 룰 이름처럼 표시 |
+| port | 포트 또는 포트 범위 |
+| protocol | tcp/udp/icmp/all 등 |
+| source | inbound source CIDR/SG |
+| destination | outbound destination CIDR/SG |
+| access | Security Group은 allow rule만 있으므로 `allow` |
+| note | description 등 비고 |
+
+## SSO Permissions 시트
+
+XLSX 출력에서는 기본적으로 `sso_permissions` 시트 생성을 시도합니다. 이 시트는 SSO Admin / Identity Store API 권한이 있는 profile에서만 채워집니다.
+
+필요 권한이 별도 관리 계정 profile에 있다면:
+
+```bash
+./aws-asset-view \
+  --profiles dev,staging,prod \
+  --sso-admin-profile management \
+  --include-sso-permissions \
+  --regions ap-northeast-2 \
+  --output assets.xlsx
+```
+
+권한이 없으면 자산 수집은 계속 진행되고, SSO 권한 시트만 비거나 오류가 stderr에 표시될 수 있습니다.
 
 ## 필요한 대표 권한
 
@@ -176,11 +233,16 @@ aws sso login --profile your-sso-profile
 - `ec2:Describe*`
 - `eks:List*`, `eks:Describe*`
 - `rds:Describe*`, `rds:ListTagsForResource` 선택
-- `s3:ListAllMyBuckets`, `s3:GetBucketLocation`, `s3:GetBucketEncryption`, `s3:GetBucketVersioning`, `s3:GetBucketPublicAccessBlock`
+- `s3:ListAllMyBuckets`, `s3:GetBucketLocation`, `s3:GetBucketEncryption`, `s3:GetBucketVersioning`, `s3:GetBucketPublicAccessBlock`, `s3:GetObjectLockConfiguration`, `s3:GetLifecycleConfiguration`
+- `efs:Describe*`
+- `backup:List*`, `backup:Describe*`
+- `cloudwatch:DescribeAlarms`, `logs:DescribeLogGroups`
 - `elasticloadbalancing:Describe*`
 - `route53:List*`, `route53:Get*`
 - `wafv2:List*`, `wafv2:Get*`
 - `lambda:ListFunctions`, `lambda:GetFunctionConfiguration`
+- `sso-admin:ListInstances`, `sso-admin:ListPermissionSets`, `sso-admin:DescribePermissionSet`, `sso-admin:ListAccountsForProvisionedPermissionSet`, `sso-admin:ListAccountAssignments` (`sso_permissions` 시트 사용 시)
+- `identitystore:DescribeUser`, `identitystore:DescribeGroup` (`sso_permissions` 시트 사용 시)
 - `pricing:GetProducts` 선택, `--rds-pricing` 사용 시
 
 ## 저장소 확장 방향

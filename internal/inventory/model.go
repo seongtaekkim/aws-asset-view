@@ -21,6 +21,8 @@ type AssetRecord struct {
 	Name             string
 	ARN              string
 	State            string
+	ProductName      string
+	Version          string
 	SKU              string
 	VCPU             string
 	MemoryMiB        string
@@ -30,6 +32,9 @@ type AssetRecord struct {
 	SecurityGroupIDs string
 	PublicAccess     string
 	Encrypted        string
+	WORMEnabled      string
+	Retention        string
+	BackupRetention  string
 	DetailsJSON      string
 	TagsJSON         string
 }
@@ -58,6 +63,8 @@ func csvHeader() []string {
 		"name",
 		"arn",
 		"state",
+		"product_name",
+		"version",
 		"sku",
 		"vcpu",
 		"memory_mib",
@@ -67,6 +74,9 @@ func csvHeader() []string {
 		"security_group_ids",
 		"public_access",
 		"encrypted",
+		"worm_enabled",
+		"retention",
+		"backup_retention",
 		"details_json",
 		"tags_json",
 	}
@@ -85,6 +95,8 @@ func (r AssetRecord) csvRow() []string {
 		r.Name,
 		r.ARN,
 		r.State,
+		r.ProductName,
+		r.Version,
 		r.SKU,
 		r.VCPU,
 		r.MemoryMiB,
@@ -94,6 +106,9 @@ func (r AssetRecord) csvRow() []string {
 		r.SecurityGroupIDs,
 		r.PublicAccess,
 		r.Encrypted,
+		r.WORMEnabled,
+		r.Retention,
+		r.BackupRetention,
 		r.DetailsJSON,
 		r.TagsJSON,
 	}
